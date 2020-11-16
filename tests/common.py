@@ -9,7 +9,6 @@ from io import StringIO
 import json
 import logging
 import os
-import sys
 import threading
 import time
 import uuid
@@ -55,7 +54,7 @@ from homeassistant.helpers import (
 )
 from homeassistant.helpers.json import JSONEncoder
 from homeassistant.setup import setup_component
-from homeassistant.util.async_ import run_callback_threadsafe
+from homeassistant.util.async_ import fire_coroutine_threadsafe, run_callback_threadsafe
 import homeassistant.util.dt as date_util
 from homeassistant.util.unit_system import METRIC_SYSTEM
 import homeassistant.util.yaml.loader as yaml_loader
@@ -109,22 +108,20 @@ def get_test_config_dir(*add_path):
 
 def get_test_home_assistant():
     """Return a Home Assistant object pointing at test config directory."""
-    if sys.platform == "win32":
-        loop = asyncio.ProactorEventLoop()
-    else:
-        loop = asyncio.new_event_loop()
-
+    loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     hass = loop.run_until_complete(async_test_home_assistant(loop))
 
-    stop_event = threading.Event()
+    hass_stop_event = threading.Event()
+    hass._stopped = hass_stop_event
+    loop_stop_event = threading.Event()
 
     def run_loop():
         """Run event loop."""
         # pylint: disable=protected-access
         loop._thread_ident = threading.get_ident()
         loop.run_forever()
-        stop_event.set()
+        loop_stop_event.set()
 
     orig_stop = hass.stop
 
@@ -135,7 +132,11 @@ def get_test_home_assistant():
     def stop_hass():
         """Stop hass."""
         orig_stop()
-        stop_event.wait()
+        hass_stop_event.wait()
+        # To wake up selector._run_once and process stop
+        fire_coroutine_threadsafe(asyncio.sleep(0), loop)
+        loop.stop()
+        loop_stop_event.wait()
         loop.close()
 
     hass.start = start_hass
